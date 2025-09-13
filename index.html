@@ -44,9 +44,8 @@
       word-break: break-word;
       overflow-wrap: anywhere;
       hyphens: auto;
+      white-space: pre-line; /* conserve les retours chariot du .txt */
     }
-    #quote p { margin: 0 0 .8em; }
-    #quote p:last-child { margin-bottom: 0; }
   </style>
 </head>
 <body>
@@ -57,32 +56,36 @@
   <script>
     /* ---------- Config ---------- */
     const GDOC_URL    = "https://docs.google.com/document/d/1cao2dKO5laTNxQTxIcGyI7inl2vLsr4ehei8ZqlalVk/export?format=txt";
-    const STORAGE_KEY = "citation_unique_zoom_fit_v4";
-    const SEPARATOR   = "***";        // nouveau séparateur
-    const RE_PARA_SPLIT = /\s*§{2,}\s*/g;
-    const RE_LINE_SPLIT = /\s*§\s*/g;
+    const STORAGE_KEY = "citation_unique_preserve_newlines_slash";
+    const SEPARATOR   = "///";        // séparateur entre citations
 
+    /* ---------- Utilitaires ---------- */
     const pickRandom = arr => arr[Math.floor(Math.random() * arr.length)];
-    const escapeHtml = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-
-    function renderFromSectionMarkers(plain){
-      const paras = plain.split(RE_PARA_SPLIT).map(s => s.trim()).filter(Boolean);
-      return paras.map(p => {
-        const lines = p.split(RE_LINE_SPLIT).map(x => escapeHtml(x.trim())).filter(Boolean);
-        return `<p>${lines.join("<br>")}</p>`;
-      }).join("");
-    }
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
     async function fetchDocText(){
       const res  = await fetch(GDOC_URL, { cache: "no-store", credentials: "omit" });
       const text = await res.text();
+      // On garde les vrais \n
       return text
-        .replace(/\u00A0/g, " ")
-        .replace(/[ \t\f\v]{2,}/g, " ")
+        .replace(/\u00A0/g, " ")        // nbsp → espace
+        .replace(/[ \t\f\v]{2,}/g, " ") // compresse espaces multiples
         .trim();
     }
 
-    function fitTextToContainer(el, container, {minPx=12, maxPx=30, step=0.5} = {}){
+    // taille cible en fonction de la longueur
+    const GLOBAL_MIN_PX = 12, GLOBAL_MAX_PX = 34;
+    const LEN_MIN = 60, LEN_MAX = 320;
+    const SIZE_AT_LEN_MIN = 30, SIZE_AT_LEN_MAX = 14;
+
+    function computeTargetSizePx(text){
+      const len = text.length;
+      const t = clamp((len - LEN_MIN) / (LEN_MAX - LEN_MIN), 0, 1);
+      const interp = SIZE_AT_LEN_MIN + (SIZE_AT_LEN_MAX - SIZE_AT_LEN_MIN) * t;
+      return clamp(interp, GLOBAL_MIN_PX, GLOBAL_MAX_PX);
+    }
+
+    function fitTextToContainer(el, container, {minPx, maxPx, step=0.5}){
       let lo = minPx, hi = maxPx, best = minPx;
       const fits = (px) => {
         el.style.fontSize = px + "px";
@@ -106,46 +109,36 @@
         requestAnimationFrame(() => {
           const card = document.querySelector(".card");
           const quote = document.getElementById("quote");
-          if (!quote.innerHTML) return;
+          if (!quote.textContent) return;
           fitTextToContainer(quote, card, bounds);
         });
       }, 30);
-    }
-
-    function computeTargetSizePx(text){
-      const len = text.replace(/\s+/g, ' ').trim().length;
-      const LEN_MIN = 60, LEN_MAX = 320;
-      const SIZE_AT_LEN_MIN = 30, SIZE_AT_LEN_MAX = 14;
-      const GLOBAL_MIN_PX = 12, GLOBAL_MAX_PX = 34;
-      const t = Math.max(0, Math.min(1, (len - LEN_MIN) / (LEN_MAX - LEN_MIN)));
-      const interpolated = SIZE_AT_LEN_MIN + (SIZE_AT_LEN_MAX - SIZE_AT_LEN_MIN) * t;
-      return Math.max(GLOBAL_MIN_PX, Math.min(GLOBAL_MAX_PX, interpolated));
     }
 
     /* ---------- Init ---------- */
     async function init(){
       try{
         const el = document.getElementById('quote');
+
+        // Même citation au refresh (par onglet)
         const cached = sessionStorage.getItem(STORAGE_KEY);
         if (cached) {
-          el.innerHTML = cached;
-          const target = computeTargetSizePx(el.textContent || el.innerText || "");
+          el.textContent = cached;
+          const target = computeTargetSizePx(el.textContent);
           const bounds = {minPx: target-6, maxPx: target+4};
           scheduleFit(bounds);
           return;
         }
 
         const all = await fetchDocText();
-        const parts = all.split(/\s*\*\*\*\s*/g).map(s => s.trim()).filter(Boolean);
-        if (!parts.length) throw new Error("Aucune citation détectée (séparateur *** manquant).");
+        const parts = all.split(/\s*\/\/\/\s*/g).map(s => s.trim()).filter(Boolean);
+        if (!parts.length) throw new Error("Aucune citation détectée (séparateur /// manquant).");
 
-        const picked    = pickRandom(parts);
-        const finalHtml = renderFromSectionMarkers(picked);
+        const picked = pickRandom(parts);
+        sessionStorage.setItem(STORAGE_KEY, picked);
 
-        sessionStorage.setItem(STORAGE_KEY, finalHtml);
-        el.innerHTML = finalHtml;
-
-        const target = computeTargetSizePx(el.textContent || el.innerText || "");
+        el.textContent = picked;
+        const target = computeTargetSizePx(picked);
         const bounds = {minPx: target-6, maxPx: target+4};
         scheduleFit(bounds);
 
@@ -155,8 +148,8 @@
         try { new ResizeObserver(onResize).observe(document.querySelector('.card')); } catch(_) {}
         document.fonts?.ready?.then(() => scheduleFit(bounds));
       }catch(e){
-        document.getElementById('quote').innerHTML =
-          "Impossible de charger les citations.<br><small>" + (e?.message || e) + "</small>";
+        document.getElementById('quote').textContent =
+          "Impossible de charger les citations.\n" + (e?.message || e);
       }
     }
 
